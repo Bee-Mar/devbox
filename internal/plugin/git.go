@@ -163,6 +163,7 @@ func (p *gitPlugin) url(subpath string) (string, error) {
 	}
 }
 
+// TODO UPDATME
 func (p *gitPlugin) sshGitUrl() (string, error) {
 	address, err := url.Parse(p.ref.URL)
 

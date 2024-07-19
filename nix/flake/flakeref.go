@@ -2,6 +2,7 @@
 package flake
 
 import (
+	"log/slog"
 	"net/url"
 	"path"
 	"slices"
@@ -237,36 +238,31 @@ func parseURLRef(ref string) (parsed Ref, fragment string, err error) {
 func parseGitRef(refURL *url.URL, parsed *Ref) error {
 	// github:<owner>/<repo>(/<rev-or-ref>)?(\?<params>)?
 
-	// NOTE: this currently doesn't handle subgroups with GitLab, and will
-	// continue to cause problems restructuring plugins to use JSON objects
-	// will make this much easier in the long run. GitHub and Bitbucket don't support
-	// subgroups, so this won't be an issue with those repos.
-	// something akin to the example below can help eliminate a vast majority
-	// of this URL parsing logic, and make things more flexible
+	splitCount := 3
 
-	/*
-		"include": [
-			"username/subgroup/repo": {
-				"type": "ssh",
-				"host": "gitlab",
-				"port": 9999,
-				"dir": "my-plugins",
-				"ref": "myref",
-				"branch": "mybranch"
-			}
-		]
-	*/
+	if parsed.Type == TypeGitLab {
+		splitCount = 20
+	}
 
 	// Only split up to 3 times (owner, repo, ref/rev) so that we handle
 	// refs that have slashes in them. For example,
 	// "github:jetify-com/devbox/gcurtis/flakeref" parses as "gcurtis/flakeref".
-	split, err := splitPathOrOpaque(refURL, 3)
+	split, err := splitPathOrOpaque(refURL, splitCount)
 	if err != nil {
 		return err
 	}
 
 	parsed.Owner = split[0]
-	parsed.Repo = split[1]
+
+	if parsed.Type == TypeGitLab {
+		parsed.Repo = split[len(split)-1]
+
+		if len(split) > 2 {
+			parsed.Subgroup = strings.Join(split[1:len(split)-1], "/")
+		}
+	} else {
+		parsed.Repo = split[1]
+	}
 
 	if len(split) > 2 {
 		if revOrRef := split[2]; isGitHash(revOrRef) {
@@ -278,7 +274,6 @@ func parseGitRef(refURL *url.URL, parsed *Ref) error {
 
 	parsed.Host = refURL.Query().Get("host")
 	parsed.Dir = refURL.Query().Get("dir")
-	parsed.Subgroup = refURL.Query().Get("subgroup")
 	parsed.Port = refURL.Query().Get("port")
 
 	if qRef := refURL.Query().Get("ref"); qRef != "" {
