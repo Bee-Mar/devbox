@@ -72,21 +72,44 @@ func (p *gitPlugin) Hash() string {
 }
 
 func (p *gitPlugin) FileContent(subpath string) ([]byte, error) {
-	contentURL, err := p.url(subpath)
+	pluginLocation, err := p.url(subpath)
 
 	if err != nil {
 		return nil, err
 	}
 
-	readFile := func() ([]byte, time.Duration, error) {
-		file, err := os.Open(contentURL)
-		info, err := file.Stat()
+	retrieveArchive := func() ([]byte, time.Duration, error) {
+		archiveDir, _ := os.MkdirTemp("", p.ref.Repo)
+		archive := filepath.Join(archiveDir, p.ref.Dir+".tar.gz")
+		args := strings.Fields(pluginLocation + archive) // this is really just the base git archive command + file
 
-		if err != nil || info.Size() == 0 {
+		cmd := exec.Command(args[0], args[1:]...)
+		_, err := cmd.Output()
+
+		if err != nil {
+			slog.Error("Error executing git archive: ", err)
 			return nil, 0, err
 		}
 
+		reader, err := os.Open(archive)
+		err = fileutil.Untar(reader, archiveDir)
+
+		if err != nil {
+			slog.Error("Encountered error while trying to extract "+archive+": ", err)
+			return nil, 0, err
+		}
+
+		tarfile := filepath.Join(archiveDir, p.ref.Dir, "plugin.json")
+		file, err := os.Open(tarfile)
 		defer file.Close()
+
+		info, err := file.Stat()
+
+		if err != nil || info.Size() == 0 {
+			slog.Error("Extracted file " + file.Name() + " is empty. Cannot process plugin.")
+			return nil, 0, err
+		}
+
 		body, err := io.ReadAll(file)
 
 		if err != nil {
@@ -96,8 +119,8 @@ func (p *gitPlugin) FileContent(subpath string) ([]byte, error) {
 		return body, 24 * time.Hour, nil
 	}
 
-	retrieve := func() ([]byte, time.Duration, error) {
-		req, err := p.request(contentURL)
+	retrieveHttp := func() ([]byte, time.Duration, error) {
+		req, err := p.request(pluginLocation)
 
 		if err != nil {
 			return nil, 0, err
@@ -136,13 +159,13 @@ func (p *gitPlugin) FileContent(subpath string) ([]byte, error) {
 
 	switch p.ref.Type {
 	case flake.TypeSSH:
-		return sshCache.GetOrSet(contentURL, readFile)
+		return sshCache.GetOrSet(pluginLocation, retrieveArchive)
 	case flake.TypeGitHub:
-		return githubCache.GetOrSet(contentURL, retrieve)
+		return githubCache.GetOrSet(pluginLocation, retrieveHttp)
 	case flake.TypeGitLab:
-		return gitlabCache.GetOrSet(contentURL, retrieve)
+		return gitlabCache.GetOrSet(pluginLocation, retrieveHttp)
 	case flake.TypeBitBucket:
-		return bitbucketCache.GetOrSet(contentURL, retrieve)
+		return bitbucketCache.GetOrSet(pluginLocation, retrieveHttp)
 	default:
 		return nil, err
 	}
@@ -151,7 +174,7 @@ func (p *gitPlugin) FileContent(subpath string) ([]byte, error) {
 func (p *gitPlugin) url(subpath string) (string, error) {
 	switch p.ref.Type {
 	case flake.TypeSSH:
-		return p.sshGitUrl()
+		return p.sshBaseGitCommand()
 	case flake.TypeGitLab:
 		return p.gitlabUrl(subpath)
 	case flake.TypeGitHub:
@@ -163,8 +186,7 @@ func (p *gitPlugin) url(subpath string) (string, error) {
 	}
 }
 
-// TODO UPDATME
-func (p *gitPlugin) sshGitUrl() (string, error) {
+func (p *gitPlugin) sshBaseGitCommand() (string, error) {
 	address, err := url.Parse(p.ref.URL)
 
 	if err != nil {
@@ -178,51 +200,18 @@ func (p *gitPlugin) sshGitUrl() (string, error) {
 		defaultBranch = "master"
 	}
 
-	fileFormat := "tar.gz"
-	baseCommand := fmt.Sprintf("git archive --format=%s --remote=ssh://git@", fileFormat)
-
+	baseCommand := "git archive --format=tar.gz --remote=ssh://git@"
 	path, _ := url.JoinPath(p.ref.Owner, p.ref.Subgroup, p.ref.Repo)
-
-	archive := filepath.Join("/", "tmp", p.ref.Dir+"."+fileFormat)
 	branch := cmp.Or(p.ref.Rev, p.ref.Ref, defaultBranch)
 
 	host := p.ref.Host
-
 	if p.ref.Port != "" {
 		host += ":" + p.ref.Port
 	}
 
-	// TODO: try to use the Devbox file hashing mechanism to make sure it's stored properly
-	command := fmt.Sprintf("%s%s/%s %s %s -o %s", baseCommand, host, path, branch, p.ref.Dir, archive)
-	slog.Debug("Generated git archive command: " + command)
-
-	// 24 hours is currently when files are considered "expired" in other FileContent function
-	currentTime := time.Now()
-	threshold := 24 * time.Hour
-	expiration := currentTime.Add(-threshold)
-
-	args := strings.Fields(command)
-	archiveInfo, err := os.Stat(archive)
-
-	if os.IsNotExist(err) || archiveInfo.ModTime().Before(expiration) {
-		cmd := exec.Command(args[0], args[1:]...) // Maybe make async?
-
-		_, err := cmd.Output()
-
-		if err != nil {
-			slog.Error("Error executing git archive: ", err)
-			return "", err
-		}
-
-		reader, err := os.Open(archive)
-		err = fileutil.Untar(reader, "/tmp") // TODO: add UUID?
-
-		if err == nil {
-			return "", err
-		}
-	}
-
-	return filepath.Join("/", "tmp", p.ref.Dir, "plugin.json"), nil
+	command := fmt.Sprintf("%s%s/%s %s %s -o", baseCommand, host, path, branch, p.ref.Dir)
+	slog.Debug("Generated base git archive command: " + command)
+	return command, nil
 }
 
 func (p *gitPlugin) githubUrl(subpath string) (string, error) {
@@ -294,9 +283,6 @@ func (p *gitPlugin) gitlabUrl(subpath string) (string, error) {
 }
 
 func (p *gitPlugin) request(contentURL string) (*http.Request, error) {
-	// TODO: Determine if private repo. Maybe use `git archive`?
-	// git archive --format=tar --remote=git@gitlab.com:astro-tec/devbox-plugin-test HEAD plugin -o plugin.tar
-
 	req, err := http.NewRequest(http.MethodGet, contentURL, nil)
 
 	if err != nil {

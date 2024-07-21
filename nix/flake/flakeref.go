@@ -2,7 +2,6 @@
 package flake
 
 import (
-	"log/slog"
 	"net/url"
 	"path"
 	"slices"
