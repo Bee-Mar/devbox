@@ -187,18 +187,14 @@ func (p *gitPlugin) url(subpath string) (string, error) {
 }
 
 func (p *gitPlugin) sshBaseGitCommand() (string, error) {
-	address, err := url.Parse(p.ref.URL)
-
-	if err != nil {
-		return "", err
-	}
-
 	defaultBranch := "main"
 
-	if address.Host == flake.TypeGitHub {
+	if p.ref.Host == flake.TypeGitHub+".com" {
 		// using master for GitHub repos for the same reasoning established in `githubUrl`
 		defaultBranch = "master"
 	}
+
+	p.ref.Ref = defaultBranch
 
 	baseCommand := "git archive --format=tar.gz --remote=ssh://git@"
 	path, _ := url.JoinPath(p.ref.Owner, p.ref.Subgroup, p.ref.Repo)

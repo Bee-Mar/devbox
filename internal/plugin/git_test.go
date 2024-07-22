@@ -73,6 +73,24 @@ func TestNewGitPlugin(t *testing.T) {
 			},
 			expectedURL: "https://raw.githubusercontent.com/jetify-com/devbox-plugins/initials/my-branch/mongodb",
 		},
+		// TODO gitlab tests
+		// TODO bitbucket tests
+		// TODO private repo tests
+		{
+			name:    "parse private repo url and return base git command",
+			Include: "git+ssh:jetify-com/devbox-plugins?host=github.com",
+			expected: gitPlugin{
+				ref: flake.Ref{
+					Type:  "ssh",
+					Owner: "jetify-com",
+					Repo:  "devbox-plugins",
+					Host:  "github.com",
+					URL:   "ssh:jetify-com/devbox-plugins?host=github.com",
+				},
+				name: "jetify-com.devbox-plugins",
+			},
+			expectedURL: "git archive --format=tar.gz --remote=ssh://git@github.com/jetify-com/devbox-plugins master  -o",
+		},
 	}
 
 	for _, testCase := range testCases {
